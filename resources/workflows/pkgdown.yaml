@@ -1,62 +1,69 @@
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - release
-      - master
-      - develop
+    branches: [main, master, develop, release]
+  release:
+    types: [published]
+
 
 name: Website (pkgdown)
 
 jobs:
   pkgdown:
-    runs-on: macOS-latest
+    runs-on: ubuntu-latest
+    # Only restrict concurrency for non-PR jobs
+    concurrency:
+      group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
+
+    # Required for native GitHub Pages deployment
+    # In each repo: Settings > Pages > Source must be set to "GitHub Actions"
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     env:
-      R_REMOTES_NO_ERRORS_FROM_WARNINGS: true
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: r-lib/actions/setup-r@master
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r@v2
         with:
           r-version: 'release'
+          use-public-rspm: true
+          extra-repositories: "https://r-hyperspec.github.io/pkg-repo/"
 
-      - uses: r-lib/actions/setup-pandoc@master
-
-      - name: Query dependencies
-        run: |
-          install.packages('remotes')
-          saveRDS(remotes::dev_package_deps(dependencies = TRUE), ".github/depends.Rds", version = 2)
-          writeLines(sprintf("R-%i.%i", getRversion()$major, getRversion()$minor), ".github/R-version")
-        shell: Rscript {0}
-
-      - name: Cache R packages
-        uses: actions/cache@v1
+      - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          path: ${{ env.R_LIBS_USER }}
-          key: ${{ runner.os }}-${{ hashFiles('.github/R-version') }}-1-${{ hashFiles('.github/depends.Rds') }}
-          restore-keys: ${{ runner.os }}-${{ hashFiles('.github/R-version') }}-1-
-
-      - name: Install dependencies
-        run: |
-          install.packages(c("remotes", "devtools"))
-          remotes::install_deps(dependencies = TRUE)
-          remotes::install_cran("pkgdown")
-        shell: Rscript {0}
+          extra-packages: any::pkgdown, any::devtools, local::.
+          needs: website
 
       - name: Roxygenize
-        # The vignettes will be built in step "Deploy package"
+        # The vignettes will be built in the next steps
         run: |
           devtools::document(roclets = c('rd', 'collate', 'namespace'))
         shell: Rscript {0}
 
-      - name: Install package
-        run: R CMD INSTALL .
+      - name: Build site
+        run: pkgdown::build_site_github_pages(new_process = FALSE, install = TRUE)
+        shell: Rscript {0}
 
-      - name: Deploy package
-        run: |
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          Rscript -e 'pkgdown::deploy_to_branch(new_process = FALSE)'
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages 🚀
+        if: github.event_name != 'pull_request'
+        id: deployment
+        uses: actions/deploy-pages@v4
 
